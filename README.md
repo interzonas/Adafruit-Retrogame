@@ -1,3 +1,8 @@
+Aviso
+=====
+Este es un clon del proyecto original de Adafruit para que directamente funcione el diseño del arcade que hemos realizado en [interzonas](http://interzonas.info)
+
+
 Adafruit-Retrogame
 ==================
 
