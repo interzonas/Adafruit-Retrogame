@@ -24,10 +24,10 @@ Or, to make this persistent between reboots, add a line to /etc/modules:
 
     uinput
 
-Prior versions of this code, when being compiled for use with the Cupcade
-or PiGRRL projects, required CUPCADE to be #defined.  This is no longer
-the case; instead a test is performed to see if a PiTFT is connected, and
-one of two I/O tables is automatically selected.
+To use with the Cupcade project (w/Adafruit PiTFT and menu util), retrogame
+must be recompiled with CUPCADE #defined, i.e.:
+
+    make clean; make CFLAGS=-DCUPCADE
 
 Written by Phil Burgess for Adafruit Industries, distributed under BSD
 License.  Adafruit invests time and resources providing this open source
@@ -86,20 +86,19 @@ POSSIBILITY OF SUCH DAMAGE.
 struct {
 	int pin;
 	int key;
-} *io, // In main() this pointer is set to one of the two tables below.
-   ioTFT[] = {
-	// This pin/key table is used if an Adafruit PiTFT display
-	// is detected (e.g. Cupcade or PiGRRL).
-	// Input   Output (from /usr/include/linux/input.h)
-	{   2,     KEY_LEFT     },   // Joystick (4 pins)
-	{   3,     KEY_RIGHT    },
-	{   4,     KEY_DOWN     },
-	{  17,     KEY_UP       },
-	{  27,     KEY_Z        },   // A/Fire/jump/primary
-	{  22,     KEY_X        },   // B/Bomb/secondary
-	{  23,     KEY_R        },   // Credit
-	{  18,     KEY_Q        },   // Start 1P
-	{  -1,     -1           } }, // END OF LIST, DO NOT CHANGE
+} io[] = {
+//	  Input    Output (from /usr/include/linux/input.h)
+#ifdef CUPCADE
+	// Use this table for the Cupcade project (w/PiTFT).
+	// To compile, type:    make clean; make CFLAGS=-DCUPCADE
+	{  2,      KEY_LEFT     }, // Joystick (4 pins)
+	{  3,      KEY_RIGHT    },
+	{  4,      KEY_DOWN     },
+	{ 17,      KEY_UP       },
+	{ 27,      KEY_Z        }, // Fire/jump/primary
+	{ 22,      KEY_X        }, // Bomb/secondary
+	{ 23,      KEY_R        }, // Credit
+	{ 18,      KEY_Q        }  // Start 1P
 	// MAME must be configured with 'z' & 'x' as buttons 1 & 2 -
 	// this was required for the accompanying 'menu' utility to
 	// work (catching crtl/alt w/ncurses gets totally NASTY).
@@ -108,19 +107,23 @@ struct {
 	// GPIO options are 'maxed out' with PiTFT + above table.
 	// If additional buttons are desired, will need to disable
 	// serial console and/or use P5 header.  Or use keyboard.
-   ioStandard[] = {
-	// This pin/key table is used when the PiTFT isn't found
-	// (using HDMI or composite instead), as with our original
-	// retro gaming guide.
-	// Input   Output (from /usr/include/linux/input.h)
-	{  25,     KEY_LEFT     },   // Joystick (4 pins)
-	{   9,     KEY_RIGHT    },
-	{  10,     KEY_UP       },
-	{  17,     KEY_DOWN     },
-	{  23,     KEY_LEFTCTRL },   // A/Fire/jump/primary
-	{   7,     KEY_LEFTALT  },   // B/Bomb/secondary
+#else
+	// Use this table for the basic retro gaming project:
+	//[ 2,       KEY_5        ],
+        //[ 3,       KEY_ESC      ],
+	{ 0, 	     KEY_5	      },
+	{ 4,       KEY_1	      },
+	{ 1, 	     KEY_ESC	    },
+	{ 25,      KEY_LEFT     }, // Joystick (4 pins)
+	{  9,      KEY_RIGHT    },
+	{ 10,      KEY_UP       },
+	{ 17,      KEY_DOWN     },
+	{ 23,      KEY_ENTER }, // Fire/jump/primary
+	{  7,      KEY_LEFTALT  }  // Bomb/secondary
 	// For credit/start/etc., use USB keyboard or add more buttons.
-	{  -1,     -1           } }; // END OF LIST, DO NOT CHANGE
+#endif
+};
+#define IOLEN (sizeof(io) / sizeof(io[0])) // io[] table size
 
 // A "Vulcan nerve pinch" (holding down a specific button combination
 // for a few seconds) issues an 'esc' keypress to MAME (which brings up
@@ -173,7 +176,7 @@ void cleanup() {
 	int  fd, i;
 	sprintf(buf, "%s/unexport", sysfs_root);
 	if((fd = open(buf, O_WRONLY)) >= 0) {
-		for(i=0; io[i].pin >= 0; i++) {
+		for(i=0; i<IOLEN; i++) {
 			// Restore GND items to inputs
 			if(io[i].key == GND)
 				pinConfig(io[i].pin, "direction", "in");
@@ -197,36 +200,6 @@ void signalHandler(int n) {
 	running = 0;
 }
 
-// Returns 1 if running on early Pi board, 0 otherwise.
-// Relies on info in /proc/cmdline by default; if this is
-// unreliable in the future, easy change to /proc/cpuinfo.
-int isRevOnePi(void) {
-	FILE *fp;
-	char  buf[1024], *ptr;
-	int   n, rev = 0;
-#if 1
-	char *filename = "/proc/cmdline",
-	     *token    = "boardrev=",
-	     *fmt      = "%x";
-#else
-	char *filename = "/proc/cpuinfo",
-	     *token    = "Revision", // Capital R!
-	     *fmt      = " : %x";
-#endif
-
-	if((fp = fopen(filename, "r"))) {
-		if((n = fread(buf, 1, sizeof(buf)-1, fp)) > 0) {
-			buf[n] = 0;
-			if((ptr = strstr(buf, token))) {
-				sscanf(&ptr[strlen(token)], fmt, &rev);
-			}
-		}
-		fclose(fp);
-	}
-
-	return ((rev == 0x02) || (rev == 0x03));
-}
-
 
 // Main stuff ------------------------------------------------------------
 
@@ -238,43 +211,30 @@ int isRevOnePi(void) {
 
 int main(int argc, char *argv[]) {
 
-	// A few arrays here are declared with 32 elements, even though
+	// A few arrays here are declared with IOLEN elements, even though
 	// values aren't needed for io[] members where the 'key' value is
 	// GND.  This simplifies the code a bit -- no need for mallocs and
 	// tests to create these arrays -- but may waste a handful of
 	// bytes for any declared GNDs.
-	char                   buf[50],      // For sundry filenames
-	                       c;            // Pin input value ('0'/'1')
-	int                    fd,           // For mmap, sysfs, uinput
-	                       i, j,         // Asst. counter
-	                       bitmask,      // Pullup enable bitmask
-	                       timeout = -1, // poll() timeout
-	                       intstate[32], // Last-read state
-	                       extstate[32], // Debounced state
-	                       lastKey = -1; // Last key down (for repeat)
-	unsigned long          bitMask, bit; // For Vulcan pinch detect
-	volatile unsigned char shortWait;    // Delay counter
-	struct input_event     keyEv, synEv; // uinput events
-	struct pollfd          p[32];        // GPIO file descriptors
+	char                   buf[50],         // For sundry filenames
+	                       c;               // Pin input value ('0'/'1')
+	int                    fd,              // For mmap, sysfs, uinput
+	                       i, j,            // Asst. counter
+	                       bitmask,         // Pullup enable bitmask
+	                       timeout = -1,    // poll() timeout
+	                       intstate[IOLEN], // Last-read state
+	                       extstate[IOLEN], // Debounced state
+	                       lastKey = -1;    // Last key down (for repeat)
+	unsigned long          bitMask, bit;    // For Vulcan pinch detect
+	volatile unsigned char shortWait;       // Delay counter
+	struct uinput_user_dev uidev;           // uinput device
+	struct input_event     keyEv, synEv;    // uinput events
+	struct pollfd          p[IOLEN];        // GPIO file descriptors
 
 	progName = argv[0];             // For error reporting
 	signal(SIGINT , signalHandler); // Trap basic signals (exit cleanly)
 	signal(SIGKILL, signalHandler);
 
-	// Select io[] table for Cupcade (TFT) or 'normal' project.
-	io = (access("/etc/modprobe.d/adafruit.conf", F_OK) ||
-	      access("/dev/fb1", F_OK)) ? ioStandard : ioTFT;
-
-	// If this is a "Revision 1" Pi board (no mounting holes),
-	// remap certain pin numbers in the io[] array for compatibility.
-	// This way the code doesn't need modification for old boards.
-	if(isRevOnePi()) {
-		for(i=0; io[i].pin >= 0; i++) {
-			if(     io[i].pin ==  2) io[i].pin = 0;
-			else if(io[i].pin ==  3) io[i].pin = 1;
-			else if(io[i].pin == 27) io[i].pin = 21;
-		}
-	}
 
 	// ----------------------------------------------------------------
 	// Although Sysfs provides solid GPIO interrupt handling, there's
@@ -296,7 +256,7 @@ int main(int argc, char *argv[]) {
 	close(fd);              // Not needed after mmap()
 	if(gpio == MAP_FAILED) err("Can't mmap()");
 	// Make combined bitmap of pullup-enabled pins:
-	for(bitmask=i=0; io[i].pin >= 0; i++)
+	for(bitmask=i=0; i<IOLEN; i++)
 		if(io[i].key != GND) bitmask |= (1 << io[i].pin);
 	gpio[GPPUD]     = 2;                    // Enable pullup
 	for(shortWait=150;--shortWait;);        // Min 150 cycle wait
@@ -313,7 +273,7 @@ int main(int argc, char *argv[]) {
 	sprintf(buf, "%s/export", sysfs_root);
 	if((fd = open(buf, O_WRONLY)) < 0) // Open Sysfs export file
 		err("Can't open GPIO export file");
-	for(i=j=0; io[i].pin >= 0; i++) { // For each pin of interest...
+	for(i=j=0; i<IOLEN; i++) { // For each pin of interest...
 		sprintf(buf, "%d", io[i].pin);
 		write(fd, buf, strlen(buf));             // Export pin
 		pinConfig(io[i].pin, "active_low", "0"); // Don't invert
@@ -354,23 +314,17 @@ int main(int argc, char *argv[]) {
 	// ----------------------------------------------------------------
 	// Set up uinput
 
-#if 1
-	// Retrogame normally uses /dev/uinput for generating key events.
-	// Cupcade requires this and it's the default.  SDL2 (used by
-	// some newer emulators) doesn't like it, wants /dev/input/event0
-	// instead.  Enable that code by changing to "#if 0" above.
 	if((fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK)) < 0)
 		err("Can't open /dev/uinput");
 	if(ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0)
 		err("Can't SET_EVBIT");
-	for(i=0; io[i].pin >= 0; i++) {
+	for(i=0; i<IOLEN; i++) {
 		if(io[i].key != GND) {
 			if(ioctl(fd, UI_SET_KEYBIT, io[i].key) < 0)
 				err("Can't SET_KEYBIT");
 		}
 	}
 	if(ioctl(fd, UI_SET_KEYBIT, vulcanKey) < 0) err("Can't SET_KEYBIT");
-	struct uinput_user_dev uidev;
 	memset(&uidev, 0, sizeof(uidev));
 	snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "retrogame");
 	uidev.id.bustype = BUS_USB;
@@ -381,11 +335,6 @@ int main(int argc, char *argv[]) {
 		err("write failed");
 	if(ioctl(fd, UI_DEV_CREATE) < 0)
 		err("DEV_CREATE failed");
-#else // SDL2 prefers this event methodology
-	if((fd = open("/dev/input/event0", O_WRONLY | O_NONBLOCK)) < 0)
-		err("Can't open /dev/input/event0");
-#endif
-
 	// Initialize input event structures
 	memset(&keyEv, 0, sizeof(keyEv));
 	keyEv.type  = EV_KEY;
@@ -427,7 +376,7 @@ int main(int argc, char *argv[]) {
 			// remapping table or a duplicate key[] list.
 			bitMask = 0L; // Mask of buttons currently pressed
 			bit     = 1L;
-			for(c=i=j=0; io[i].pin >= 0; i++, bit<<=1) {
+			for(c=i=j=0; i<IOLEN; i++, bit<<=1) {
 				if(io[i].key != GND) {
 					// Compare internal state against
 					// previously-issued value.  Send
